@@ -1,0 +1,174 @@
+---
+title: "Landsat Data"
+format: html
+---
+ 
+ ```{r}
+ ### for easy data wrangling and plotting:
+library(dplyr)     
+library(tidyr)
+library(ggplot2)
+### spatial data packages:
+library(terra)     ### for working with raster spatial data
+library(sf)        ### for working with vector spatial data
+### for easy relative file paths:
+library(here)     
+ ```
+
+# Loading in Data
+## Raster Format
+```{r}
+landsat_from_tif <- terra::rast(here('raster_training/landsat71.tif'))
+```
+
+### Plotting the layer
+```{r}
+plot(landsat_from_tif)
+```
+
+## CSV Coordinates
+```{r}
+ls_green_df <- readr::read_csv(here('raster_training/landsat71_band2.csv'))
+```
+
+## From Vector Data
+
+```{r}
+sb_county_sf <- sf::read_sf(here('raster_training/sb_county.gpkg'))
+```
+
+## Creating a raster from scratch 
+```{r}
+cellid<- rast(xmin=-180, xmax= 180, ymin=-90, ymax= 90, resolution= .5, crs='epsg:4326') #empty
+```
+
+### Ensuring that the data read in is all on the same coordinates
+
+```{r}
+terra::same.crs(sb_county_sf, landsat_from_tif)  ### Check that CRS are equal!
+
+sb_county_r <- terra::rasterize(x = sb_county_sf,
+                                y = landsat_from_tif,
+                                field = 'OBJECTID')
+```
+
+# Inspecting the layers
+
+```{r}
+landsat_from_tif
+```
+
+# Basic Raster Math
+```{r}
+### operating on a vector
+vec <- 1:10
+vec * 2  ### multiply by a scalar
+```
+
+```{r}
+vec + 20 ### add a scalar
+```
+
+```{r}
+log(vec) ### transform with a function
+```
+
+# Coloring
+```{r}
+### subset raster using $ or [] notation:
+ls_red <- landsat_from_tif$landsat71_3    ### band 3 is red
+ls_nir <- landsat_from_tif['landsat71_4'] ### band 4 is near IR
+
+plot(ls_red) ### note color ramp number changed
+```
+
+
+```{r}
+plot(log(ls_red))  ### looks way different!
+```
+
+
+## Picking up low infrared or values of water
+```{r}
+nir_low<- ls_nir
+nir_low[nir_low>30]<- NA
+plot(nir_low)
+```
+
+```{r}
+red_hi<- ls_red
+red_hi[red_hi< ls_nir] <-NA
+plot(red_hi)
+```
+
+# NDVI TIME!!!
+
+```{r}
+ndvi_all <-(ls_nir-ls_red)/(ls_nir + ls_red)
+# .2-.6= grassland and >0.6 is dense forest
+veg<- ndvi_all
+veg[veg < 0.2]<- NA
+plot(veg)
+
+```
+
+```{r}
+ndvi_26986<- project(x=ndvi_all, y= 'epsg: 26986', res= 2000, method= 'bilinear')
+plot(ndvi_26986)
+```
+
+## Adding Cities
+
+```{r}
+sb_city_sf <- sf::read_sf(here('raster_training/sb_cities.gpkg')) %>%
+  filter(CITY == 'Santa Barbara')
+
+ndvi_city <- crop(ndvi_all, sb_city_sf)
+plot(ndvi_city); plot(sb_city_sf %>% select(CITY), border = 'yellow', col = NA, add = TRUE)
+```
+
+## Mask
+
+
+```{r}
+ndvi_city_mask <- mask(ndvi_all, sb_city_sf) %>% trim() ## trim command is another way to crop
+plot(ndvi_city_mask)
+plot(sb_county_sf %>% select(OBJECTID), border = 'red', col = NA, add = TRUE)
+plot(sb_city_sf %>% select(CITY), border = 'yellow', col = NA, add = TRUE)
+```
+
+
+```{r}
+sb_all_cities_sf <- sf::read_sf(here('raster_training/sb_cities.gpkg')) %>%
+  mutate(ID = 1:n())
+
+ndvi_sb_cities <- extract(ndvi_all, sb_all_cities_sf, fun = mean, na.rm = TRUE) %>%
+  left_join(sb_all_cities_sf, by = 'ID') %>%
+  st_drop_geometry()
+
+```
+
+## Combining Rasters
+
+```{r}
+gr_nir_r <- c(landsat_from_tif[[2]], landsat_from_tif[[4]]) %>%
+  ### use setNames to rename the two layers!
+  setNames(c('green', 'nir'))
+
+gr_nir_df <- as.data.frame(gr_nir_r, xy = TRUE)
+
+ndwi_df <- gr_nir_df %>%
+  mutate(ndwi = (green - nir) / (green + nir))
+
+ndwi_r <- rast(ndwi_df, crs = crs(gr_nir_r))
+
+plot(ndwi_r)
+```
+
+```{r}
+ggplot(ndwi_df) + geom_raster(aes(x=x, y=y, fill= ndwi)) + theme_classic()+ coord_fixed()+ labs(title= 'NDWI for Southern Santa Barbara County')
+
+writeRaster(ndwi_r,'ndwi_sb.tif')
+```
+
+
